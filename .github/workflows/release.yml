@@ -1,0 +1,63 @@
+name: Release
+
+# Pushing a v* tag builds the app and attaches the zip to a draft GitHub release.
+# A manual run only uploads it as a workflow artifact.
+# Signing and notarization use the same secrets as subway-assets-renderer:
+# CSC_LINK (base64 Developer ID .p12), CSC_KEY_PASSWORD, APPLE_API_KEY (.p8 content),
+# APPLE_API_KEY_ID, APPLE_API_ISSUER. Without them the app gets an ad-hoc signature.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build, sign, notarize
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          if [ -z "$CSC_LINK" ]; then
+            export SIGN_IDENTITY=-
+          else
+            keychain="$RUNNER_TEMP/signing.keychain-db"
+            keychain_password=$(openssl rand -hex 16)
+            security create-keychain -p "$keychain_password" "$keychain"
+            security set-keychain-settings -lut 21600 "$keychain"
+            security unlock-keychain -p "$keychain_password" "$keychain"
+            printf '%s' "$CSC_LINK" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+            security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+            rm "$RUNNER_TEMP/cert.p12"
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+            security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          fi
+          unset CSC_LINK CSC_KEY_PASSWORD
+          if [ -n "$APPLE_API_KEY_CONTENT" ]; then
+            export APPLE_API_KEY="$RUNNER_TEMP/apple_api_key.p8"
+            printf '%s' "$APPLE_API_KEY_CONTENT" > "$APPLE_API_KEY"
+          fi
+          ./build.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ClipboardFix
+          path: build/ClipboardFix.zip
+          if-no-files-found: error
+
+      - name: Attach to draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes ""
+          gh release upload "$GITHUB_REF_NAME" build/ClipboardFix.zip --clobber
