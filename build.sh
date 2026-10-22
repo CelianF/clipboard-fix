@@ -12,8 +12,12 @@ cd "${0:A:h}"
 
 APP="build/Clipboard Fix.app"
 rm -rf build
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp Info.plist "$APP/Contents/Info.plist"
+xcrun actool Resources/Assets.xcassets --compile "$APP/Contents/Resources" \
+  --platform macosx --minimum-deployment-target 14.0 --app-icon AppIcon \
+  --output-partial-info-plist build/assets-info.plist > /dev/null
+rm build/assets-info.plist
 
 swiftc -O -parse-as-library \
   -target arm64-apple-macos14.0 -o build/ClipboardFix-arm64 Sources/ClipboardFix.swift
